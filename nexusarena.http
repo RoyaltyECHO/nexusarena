@@ -1,0 +1,6 @@
+@nexusarena_HostAddress = http://localhost:5157
+
+GET {{nexusarena_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
