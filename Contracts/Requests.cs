@@ -13,9 +13,13 @@ public sealed record LoginRequest(
     [property: Required, EmailAddress] string Email,
     [property: Required] string Password);
 
+public sealed record CreateGameCatalogItemRequest(
+    [property: Required, MaxLength(80)] string Title);
+
 public sealed record CreateTournamentRequest(
     [property: Required, MaxLength(120)] string Name,
     [property: Required, MaxLength(80)] string GameTitle,
+    Guid? GameCatalogItemId,
     TournamentFormat Format,
     TournamentVisibility Visibility,
     [property: Range(2, 512)] int MaxParticipants,
@@ -28,6 +32,7 @@ public sealed record CreateTournamentRequest(
 public sealed record UpdateTournamentRequest(
     [property: Required, MaxLength(120)] string Name,
     [property: Required, MaxLength(80)] string GameTitle,
+    Guid? GameCatalogItemId,
     TournamentVisibility Visibility,
     [property: Range(2, 512)] int MaxParticipants,
     DateTime StartDateUtc,
@@ -39,6 +44,13 @@ public sealed record UpdateTournamentRequest(
 public sealed record ReportMatchResultRequest(
     [property: Range(0, 999)] int PlayerOneScore,
     [property: Range(0, 999)] int PlayerTwoScore);
+
+public sealed record RejectMatchResultRequest(
+    [property: Required, MaxLength(400)] string Reason);
+
+public sealed record ResolveMatchDisputeRequest(
+    bool AcceptResult,
+    [property: MaxLength(400)] string? ResolutionNote);
 
 public sealed record SubmitFeedbackRequest(
     Guid ToUserId,

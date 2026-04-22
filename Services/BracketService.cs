@@ -4,82 +4,20 @@ using nexusarena.Domain;
 
 namespace nexusarena.Services;
 
-public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionService progressionService)
+public sealed class BracketService(
+    NexusArenaDbContext dbContext,
+    ProgressionService progressionService,
+    NotificationService notificationService)
 {
     public async Task GenerateSingleEliminationAsync(Tournament tournament, CancellationToken cancellationToken)
     {
-        var registrations = await LoadActiveRegistrationsAsync(tournament.Id, cancellationToken);
-        if (registrations.Count < 2)
-        {
-            throw new InvalidOperationException("Sao necessarios pelo menos 2 participantes confirmados para gerar a eliminacao simples.");
-        }
-
-        var shuffled = registrations.OrderBy(_ => Guid.NewGuid()).ToList();
-        for (var i = 0; i < shuffled.Count; i++)
-        {
-            shuffled[i].Seed = i + 1;
-        }
-
-        var bracketSize = 1;
-        while (bracketSize < shuffled.Count)
-        {
-            bracketSize *= 2;
-        }
-
-        var rounds = (int)Math.Log2(bracketSize);
-        var roundsByMatches = new List<List<Match>>();
-
-        for (var round = 1; round <= rounds; round++)
-        {
-            var matchesInRound = bracketSize / (int)Math.Pow(2, round);
-            var roundMatches = new List<Match>();
-            for (var sequence = 1; sequence <= matchesInRound; sequence++)
-            {
-                var match = new Match
-                {
-                    TournamentId = tournament.Id,
-                    Stage = MatchStage.Bracket,
-                    RoundNumber = round,
-                    Sequence = sequence
-                };
-
-                roundMatches.Add(match);
-                dbContext.Matches.Add(match);
-            }
-
-            roundsByMatches.Add(roundMatches);
-        }
-
-        for (var round = 0; round < roundsByMatches.Count - 1; round++)
-        {
-            for (var index = 0; index < roundsByMatches[round].Count; index++)
-            {
-                var nextMatch = roundsByMatches[round + 1][index / 2];
-                roundsByMatches[round][index].NextMatchId = nextMatch.Id;
-                roundsByMatches[round][index].NextMatchSlot = (index % 2) + 1;
-            }
-        }
-
-        var padded = shuffled.Cast<TournamentRegistration?>().ToList();
-        while (padded.Count < bracketSize)
-        {
-            padded.Add(null);
-        }
-
-        for (var index = 0; index < roundsByMatches[0].Count; index++)
-        {
-            var match = roundsByMatches[0][index];
-            match.PlayerOneRegistrationId = padded[index * 2]?.Id;
-            match.PlayerTwoRegistrationId = padded[index * 2 + 1]?.Id;
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await AutoAdvanceByesAsync(tournament.Id, cancellationToken);
+        var registrations = await LoadBracketEligibleRegistrationsAsync(tournament.Id, cancellationToken);
+        await GenerateEliminationBracketAsync(tournament.Id, registrations, cancellationToken);
     }
 
     public async Task GenerateGroupStageAsync(Tournament tournament, CancellationToken cancellationToken)
     {
-        var registrations = await LoadActiveRegistrationsAsync(tournament.Id, cancellationToken);
+        var registrations = await LoadBracketEligibleRegistrationsAsync(tournament.Id, cancellationToken);
         if (registrations.Count < 2)
         {
             throw new InvalidOperationException("Sao necessarios pelo menos 2 participantes confirmados para gerar grupos.");
@@ -91,7 +29,7 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
             shuffled[i].Seed = i + 1;
         }
 
-        var groupCount = (int)Math.Ceiling(shuffled.Count / 4m);
+        var groupCount = Math.Max(1, (int)Math.Ceiling(shuffled.Count / 4m));
         var groups = new List<TournamentGroup>();
         for (var i = 0; i < groupCount; i++)
         {
@@ -126,7 +64,6 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
                 .OrderBy(x => x.Id)
                 .ToListAsync(cancellationToken);
 
-            var round = 1;
             var sequence = 1;
             for (var i = 0; i < members.Count; i++)
             {
@@ -137,14 +74,12 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
                         TournamentId = tournament.Id,
                         TournamentGroupId = group.Id,
                         Stage = MatchStage.Group,
-                        RoundNumber = round,
+                        RoundNumber = i + 1,
                         Sequence = sequence++,
                         PlayerOneRegistrationId = members[i].TournamentRegistrationId,
                         PlayerTwoRegistrationId = members[j].TournamentRegistrationId
                     });
                 }
-
-                round++;
             }
         }
 
@@ -206,16 +141,202 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await AutoAdvanceByesAsync(match.TournamentId, cancellationToken);
+        await EnsureGroupKnockoutIfReadyAsync(match.TournamentId, cancellationToken);
         await TryCompleteTournamentAsync(match.TournamentId, cancellationToken);
     }
 
-    private async Task<List<TournamentRegistration>> LoadActiveRegistrationsAsync(Guid tournamentId, CancellationToken cancellationToken)
-        => await dbContext.TournamentRegistrations
+    public async Task EnsureGroupKnockoutIfReadyAsync(Guid tournamentId, CancellationToken cancellationToken)
+    {
+        var tournament = await dbContext.Tournaments.FirstAsync(x => x.Id == tournamentId, cancellationToken);
+        if (tournament.Format != TournamentFormat.GroupStage)
+        {
+            return;
+        }
+
+        var hasBracketMatches = await dbContext.Matches.AnyAsync(x => x.TournamentId == tournamentId && x.Stage == MatchStage.Bracket, cancellationToken);
+        if (hasBracketMatches)
+        {
+            return;
+        }
+
+        var pendingGroupMatches = await dbContext.Matches
+            .AnyAsync(x => x.TournamentId == tournamentId && x.Stage == MatchStage.Group && x.Status != MatchStatus.Confirmed, cancellationToken);
+
+        if (pendingGroupMatches)
+        {
+            return;
+        }
+
+        var groups = await dbContext.TournamentGroups
+            .Include(x => x.Members)
+            .Where(x => x.TournamentId == tournamentId)
+            .OrderBy(x => x.Order)
+            .ToListAsync(cancellationToken);
+
+        var qualified = new List<TournamentRegistration>();
+        foreach (var group in groups)
+        {
+            var topMembers = await dbContext.TournamentGroupMembers
+                .Include(x => x.TournamentRegistration)
+                .ThenInclude(x => x.User)
+                .Where(x => x.TournamentGroupId == group.Id)
+                .OrderByDescending(x => x.Points)
+                .ThenByDescending(x => x.Wins)
+                .ThenByDescending(x => x.ScoreFor - x.ScoreAgainst)
+                .ThenByDescending(x => x.ScoreFor)
+                .Take(group.Members.Count >= 4 ? 2 : 1)
+                .ToListAsync(cancellationToken);
+
+            qualified.AddRange(topMembers.Select(x => x.TournamentRegistration));
+        }
+
+        var distinctQualified = qualified
+            .GroupBy(x => x.Id)
+            .Select(x => x.First())
+            .ToList();
+
+        if (distinctQualified.Count < 2)
+        {
+            return;
+        }
+
+        await GenerateEliminationBracketAsync(tournamentId, distinctQualified, cancellationToken);
+    }
+
+    public async Task PromoteWaitlistAsync(Guid tournamentId, CancellationToken cancellationToken)
+    {
+        var tournament = await dbContext.Tournaments.FirstAsync(x => x.Id == tournamentId, cancellationToken);
+        var currentActive = await dbContext.TournamentRegistrations
+            .CountAsync(x => x.TournamentId == tournamentId &&
+                             (x.Status == RegistrationStatus.Registered || x.Status == RegistrationStatus.CheckedIn), cancellationToken);
+
+        if (currentActive >= tournament.MaxParticipants)
+        {
+            return;
+        }
+
+        var nextWaitlisted = await dbContext.TournamentRegistrations
+            .Include(x => x.User)
+            .Where(x => x.TournamentId == tournamentId && x.Status == RegistrationStatus.Waitlisted)
+            .OrderBy(x => x.RegisteredAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (nextWaitlisted is null)
+        {
+            return;
+        }
+
+        nextWaitlisted.Status = RegistrationStatus.Registered;
+        notificationService.Add(
+            nextWaitlisted.UserId,
+            tournamentId,
+            NotificationType.WaitlistPromotion,
+            $"Uma vaga foi liberada no torneio {tournament.Name}. Sua inscricao foi confirmada.");
+    }
+
+    public async Task CloseCheckInAsync(Guid tournamentId, CancellationToken cancellationToken)
+    {
+        var tournament = await dbContext.Tournaments
+            .Include(x => x.Registrations)
+            .FirstAsync(x => x.Id == tournamentId, cancellationToken);
+
+        foreach (var registration in tournament.Registrations.Where(x => x.Status == RegistrationStatus.Registered))
+        {
+            registration.Status = RegistrationStatus.Withdrawn;
+        }
+
+        tournament.Status = TournamentStatus.CheckInClosed;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await PromoteWaitlistAsync(tournamentId, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<List<TournamentRegistration>> LoadBracketEligibleRegistrationsAsync(Guid tournamentId, CancellationToken cancellationToken)
+    {
+        var registrations = await dbContext.TournamentRegistrations
             .Where(x => x.TournamentId == tournamentId &&
                         (x.Status == RegistrationStatus.CheckedIn || x.Status == RegistrationStatus.Registered))
             .Include(x => x.User)
             .OrderBy(x => x.RegisteredAtUtc)
             .ToListAsync(cancellationToken);
+
+        if (registrations.Count < 2)
+        {
+            throw new InvalidOperationException("Sao necessarios pelo menos 2 participantes ativos para gerar a chave.");
+        }
+
+        return registrations;
+    }
+
+    private async Task GenerateEliminationBracketAsync(Guid tournamentId, IReadOnlyCollection<TournamentRegistration> registrations, CancellationToken cancellationToken)
+    {
+        if (registrations.Count < 2)
+        {
+            throw new InvalidOperationException("Sao necessarios pelo menos 2 participantes para gerar eliminacao.");
+        }
+
+        var shuffled = registrations.OrderBy(_ => Guid.NewGuid()).ToList();
+        for (var i = 0; i < shuffled.Count; i++)
+        {
+            shuffled[i].Seed = i + 1;
+        }
+
+        var bracketSize = 1;
+        while (bracketSize < shuffled.Count)
+        {
+            bracketSize *= 2;
+        }
+
+        var rounds = (int)Math.Log2(bracketSize);
+        var roundsByMatches = new List<List<Match>>();
+
+        for (var round = 1; round <= rounds; round++)
+        {
+            var matchesInRound = bracketSize / (int)Math.Pow(2, round);
+            var roundMatches = new List<Match>();
+            for (var sequence = 1; sequence <= matchesInRound; sequence++)
+            {
+                var match = new Match
+                {
+                    TournamentId = tournamentId,
+                    Stage = MatchStage.Bracket,
+                    RoundNumber = round,
+                    Sequence = sequence
+                };
+
+                dbContext.Matches.Add(match);
+                roundMatches.Add(match);
+            }
+
+            roundsByMatches.Add(roundMatches);
+        }
+
+        for (var round = 0; round < roundsByMatches.Count - 1; round++)
+        {
+            for (var index = 0; index < roundsByMatches[round].Count; index++)
+            {
+                var nextMatch = roundsByMatches[round + 1][index / 2];
+                roundsByMatches[round][index].NextMatchId = nextMatch.Id;
+                roundsByMatches[round][index].NextMatchSlot = (index % 2) + 1;
+            }
+        }
+
+        var padded = shuffled.Cast<TournamentRegistration?>().ToList();
+        while (padded.Count < bracketSize)
+        {
+            padded.Add(null);
+        }
+
+        for (var index = 0; index < roundsByMatches[0].Count; index++)
+        {
+            var match = roundsByMatches[0][index];
+            match.PlayerOneRegistrationId = padded[index * 2]?.Id;
+            match.PlayerTwoRegistrationId = padded[index * 2 + 1]?.Id;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await AutoAdvanceByesAsync(tournamentId, cancellationToken);
+    }
 
     private async Task AutoAdvanceByesAsync(Guid tournamentId, CancellationToken cancellationToken)
     {
@@ -236,8 +357,8 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
             }
 
             byeMatch.WinnerRegistrationId = byeMatch.PlayerOneRegistrationId ?? byeMatch.PlayerTwoRegistrationId;
-            byeMatch.PlayerOneScore ??= byeMatch.PlayerOneRegistrationId.HasValue ? 1 : 0;
-            byeMatch.PlayerTwoScore ??= byeMatch.PlayerTwoRegistrationId.HasValue ? 1 : 0;
+            byeMatch.PlayerOneScore = byeMatch.PlayerOneRegistrationId.HasValue ? 1 : 0;
+            byeMatch.PlayerTwoScore = byeMatch.PlayerTwoRegistrationId.HasValue ? 1 : 0;
             byeMatch.Status = MatchStatus.Confirmed;
             byeMatch.ConfirmedAtUtc = DateTime.UtcNow;
 
@@ -304,7 +425,9 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
         }
 
         TournamentRegistration championRegistration;
-        if (tournament.Format == TournamentFormat.SingleElimination)
+        var hasBracketMatches = await dbContext.Matches.AnyAsync(x => x.TournamentId == tournamentId && x.Stage == MatchStage.Bracket, cancellationToken);
+
+        if (hasBracketMatches)
         {
             var finalMatch = await dbContext.Matches
                 .Where(x => x.TournamentId == tournamentId && x.Stage == MatchStage.Bracket)
@@ -325,6 +448,7 @@ public sealed class BracketService(NexusArenaDbContext dbContext, ProgressionSer
                 .OrderByDescending(x => x.Points)
                 .ThenByDescending(x => x.Wins)
                 .ThenByDescending(x => x.ScoreFor - x.ScoreAgainst)
+                .ThenByDescending(x => x.ScoreFor)
                 .FirstAsync(cancellationToken);
 
             championRegistration = bestGroupMember.TournamentRegistration;

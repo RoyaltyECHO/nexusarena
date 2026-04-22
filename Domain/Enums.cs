@@ -27,7 +27,8 @@ public enum TournamentStatus
     CheckInOpen = 4,
     InProgress = 5,
     Completed = 6,
-    Cancelled = 7
+    Cancelled = 7,
+    CheckInClosed = 8
 }
 
 public enum RegistrationStatus
@@ -50,7 +51,23 @@ public enum MatchStatus
 {
     Pending = 1,
     PendingConfirmation = 2,
-    Confirmed = 3
+    Confirmed = 3,
+    Disputed = 4
+}
+
+public enum DisputeStatus
+{
+    Open = 1,
+    ResolvedAccepted = 2,
+    ResolvedRejected = 3
+}
+
+public enum NotificationType
+{
+    WaitlistPromotion = 1,
+    TournamentUpdate = 2,
+    MatchDispute = 3,
+    General = 4
 }
 
 public enum XpActionType

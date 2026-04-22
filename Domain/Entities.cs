@@ -27,6 +27,20 @@ public sealed class User
     public ICollection<UserAchievement> Achievements { get; set; } = new List<UserAchievement>();
     public ICollection<PlayerFeedback> SentFeedback { get; set; } = new List<PlayerFeedback>();
     public ICollection<PlayerFeedback> ReceivedFeedback { get; set; } = new List<PlayerFeedback>();
+    public ICollection<TournamentNotification> Notifications { get; set; } = new List<TournamentNotification>();
+}
+
+public sealed class GameCatalogItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    [MaxLength(80)]
+    public string Title { get; set; } = string.Empty;
+    [MaxLength(80)]
+    public string Slug { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public ICollection<Tournament> Tournaments { get; set; } = new List<Tournament>();
 }
 
 public sealed class Tournament
@@ -36,6 +50,7 @@ public sealed class Tournament
     public string Name { get; set; } = string.Empty;
     [MaxLength(80)]
     public string GameTitle { get; set; } = string.Empty;
+    public Guid? GameCatalogItemId { get; set; }
     public TournamentFormat Format { get; set; }
     public TournamentVisibility Visibility { get; set; } = TournamentVisibility.Public;
     public TournamentStatus Status { get; set; } = TournamentStatus.RegistrationOpen;
@@ -51,9 +66,11 @@ public sealed class Tournament
     public DateTime? CompletedAtUtc { get; set; }
 
     public User Organizer { get; set; } = null!;
+    public GameCatalogItem? GameCatalogItem { get; set; }
     public ICollection<TournamentRegistration> Registrations { get; set; } = new List<TournamentRegistration>();
     public ICollection<TournamentGroup> Groups { get; set; } = new List<TournamentGroup>();
     public ICollection<Match> Matches { get; set; } = new List<Match>();
+    public ICollection<TournamentNotification> Notifications { get; set; } = new List<TournamentNotification>();
 }
 
 public sealed class TournamentRegistration
@@ -72,6 +89,10 @@ public sealed class TournamentRegistration
     public Tournament Tournament { get; set; } = null!;
     public User User { get; set; } = null!;
     public ICollection<TournamentGroupMember> GroupMemberships { get; set; } = new List<TournamentGroupMember>();
+    public ICollection<Match> PlayerOneMatches { get; set; } = new List<Match>();
+    public ICollection<Match> PlayerTwoMatches { get; set; } = new List<Match>();
+    public ICollection<Match> WonMatches { get; set; } = new List<Match>();
+    public ICollection<MatchResultDispute> ResultDisputes { get; set; } = new List<MatchResultDispute>();
 }
 
 public sealed class TournamentGroup
@@ -122,9 +143,48 @@ public sealed class Match
     public DateTime? PlayerOneConfirmedAtUtc { get; set; }
     public DateTime? PlayerTwoConfirmedAtUtc { get; set; }
     public DateTime? ConfirmedAtUtc { get; set; }
+    public DateTime? DisputedAtUtc { get; set; }
+    [MaxLength(400)]
+    public string? ResolutionNote { get; set; }
 
     public Tournament Tournament { get; set; } = null!;
     public TournamentGroup? TournamentGroup { get; set; }
+    public TournamentRegistration? PlayerOneRegistration { get; set; }
+    public TournamentRegistration? PlayerTwoRegistration { get; set; }
+    public TournamentRegistration? WinnerRegistration { get; set; }
+    public ICollection<MatchResultDispute> Disputes { get; set; } = new List<MatchResultDispute>();
+}
+
+public sealed class MatchResultDispute
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid MatchId { get; set; }
+    public Guid TournamentRegistrationId { get; set; }
+    public DisputeStatus Status { get; set; } = DisputeStatus.Open;
+    [MaxLength(400)]
+    public string Reason { get; set; } = string.Empty;
+    [MaxLength(400)]
+    public string? ResolutionNote { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ResolvedAtUtc { get; set; }
+
+    public Match Match { get; set; } = null!;
+    public TournamentRegistration TournamentRegistration { get; set; } = null!;
+}
+
+public sealed class TournamentNotification
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid UserId { get; set; }
+    public Guid? TournamentId { get; set; }
+    public NotificationType Type { get; set; }
+    [MaxLength(240)]
+    public string Message { get; set; } = string.Empty;
+    public bool IsRead { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public User User { get; set; } = null!;
+    public Tournament? Tournament { get; set; }
 }
 
 public sealed class XpLedgerEntry

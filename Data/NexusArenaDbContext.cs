@@ -6,11 +6,14 @@ namespace nexusarena.Data;
 public sealed class NexusArenaDbContext(DbContextOptions<NexusArenaDbContext> options) : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<GameCatalogItem> GameCatalogItems => Set<GameCatalogItem>();
     public DbSet<Tournament> Tournaments => Set<Tournament>();
     public DbSet<TournamentRegistration> TournamentRegistrations => Set<TournamentRegistration>();
     public DbSet<TournamentGroup> TournamentGroups => Set<TournamentGroup>();
     public DbSet<TournamentGroupMember> TournamentGroupMembers => Set<TournamentGroupMember>();
     public DbSet<Match> Matches => Set<Match>();
+    public DbSet<MatchResultDispute> MatchResultDisputes => Set<MatchResultDispute>();
+    public DbSet<TournamentNotification> TournamentNotifications => Set<TournamentNotification>();
     public DbSet<XpLedgerEntry> XpLedgerEntries => Set<XpLedgerEntry>();
     public DbSet<UserAchievement> UserAchievements => Set<UserAchievement>();
     public DbSet<PlayerFeedback> PlayerFeedback => Set<PlayerFeedback>();
@@ -23,12 +26,22 @@ public sealed class NexusArenaDbContext(DbContextOptions<NexusArenaDbContext> op
             entity.HasIndex(x => x.Nickname).IsUnique();
         });
 
+        modelBuilder.Entity<GameCatalogItem>(entity =>
+        {
+            entity.HasIndex(x => x.Title).IsUnique();
+            entity.HasIndex(x => x.Slug).IsUnique();
+        });
+
         modelBuilder.Entity<Tournament>(entity =>
         {
             entity.HasOne(x => x.Organizer)
                 .WithMany(x => x.OrganizedTournaments)
                 .HasForeignKey(x => x.OrganizerId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(x => x.GameCatalogItem)
+                .WithMany(x => x.Tournaments)
+                .HasForeignKey(x => x.GameCatalogItemId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<TournamentRegistration>(entity =>
@@ -73,6 +86,40 @@ public sealed class NexusArenaDbContext(DbContextOptions<NexusArenaDbContext> op
                 .WithMany(x => x.Matches)
                 .HasForeignKey(x => x.TournamentGroupId)
                 .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(x => x.PlayerOneRegistration)
+                .WithMany(x => x.PlayerOneMatches)
+                .HasForeignKey(x => x.PlayerOneRegistrationId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(x => x.PlayerTwoRegistration)
+                .WithMany(x => x.PlayerTwoMatches)
+                .HasForeignKey(x => x.PlayerTwoRegistrationId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(x => x.WinnerRegistration)
+                .WithMany(x => x.WonMatches)
+                .HasForeignKey(x => x.WinnerRegistrationId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
+        modelBuilder.Entity<MatchResultDispute>(entity =>
+        {
+            entity.HasOne(x => x.Match)
+                .WithMany(x => x.Disputes)
+                .HasForeignKey(x => x.MatchId);
+            entity.HasOne(x => x.TournamentRegistration)
+                .WithMany(x => x.ResultDisputes)
+                .HasForeignKey(x => x.TournamentRegistrationId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
+        modelBuilder.Entity<TournamentNotification>(entity =>
+        {
+            entity.HasOne(x => x.User)
+                .WithMany(x => x.Notifications)
+                .HasForeignKey(x => x.UserId);
+            entity.HasOne(x => x.Tournament)
+                .WithMany(x => x.Notifications)
+                .HasForeignKey(x => x.TournamentId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<XpLedgerEntry>(entity =>
